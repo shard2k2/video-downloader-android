@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Internet access for downloading videos -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Needed to write to Downloads folder on Android 9 and below -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
+
+    <!-- Required to run DownloadService in the foreground -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"
+        tools:ignore="ForegroundServicesPolicy"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Required on Android 13+ to show notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.YTmpE">
+
+        <!--
+            MainActivity — the main app screen.
+
+            REMOVED: android:excludeFromRecents="true"
+            That flag was hiding the app from the recents/history screen.
+            Now it will appear like every other app when you hold the square
+            button (or swipe up and hold).
+
+            REMOVED: android:theme="@style/Theme.Transparent"
+            We use the app's main theme now so the window background is correct.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            FormatPickerActivity — the bottom sheet that appears when
+            your mom shares a URL from YouTube/Facebook/browser.
+
+            Kept excludeFromRecents="true" here intentionally —
+            this is a quick popup, not a real screen, so we don't
+            want it cluttering the recents list.
+
+            Theme.Transparent lets the dim background show through
+            properly so it looks like a real bottom sheet overlay.
+        -->
+        <activity
+            android:name=".FormatPickerActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Transparent">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            DownloadService — runs in the background to handle downloads.
+            foregroundServiceType="dataSync" tells Android this service
+            is doing network data work, which is required on Android 14+.
+        -->
+        <service
+            android:name=".DownloadService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!--
+            FileProvider — allows our app to safely share file paths
+            with other apps (like the video player or music app) when
+            the user taps a download completion notification.
+
+            Without this, Android 7+ blocks direct file:// URIs and
+            the tap-to-open-file feature would crash.
+
+            The authority string must exactly match FILE_PROVIDER_AUTHORITY
+            in DownloadService.kt: "com.example.ytmpe.fileprovider"
+
+            The resource @xml/file_paths tells FileProvider which
+            folders on the device it is allowed to share files from.
+            We create that file in Step 2 below.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="com.example.ytmpe.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!--
+        Grants FileProvider permission to share files from the
+        public Downloads folder (/sdcard/Download/).
+
+        This is needed so that when a download completes and the user
+        taps the notification, our app can hand the file URI to a
+        video player or music app without Android blocking it.
+
+        "external-path" = external storage root (the SD card / internal storage)
+        name="downloads" = just a label, can be anything
+        path="Download/" = the actual Downloads folder path
+    -->
+    <external-path
+        name="downloads"
+        path="Download/" />
+</paths>

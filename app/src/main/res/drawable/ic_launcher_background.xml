@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Download arrow shaft -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24 L54,62"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"/>
+
+    <!-- Download arrow head (pointing down) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,48 L54,68 L72,48"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"/>
+
+    <!-- Bottom base line -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M30,78 L78,78"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="7"
+        android:strokeLineCap="round"/>
+
+</vector>

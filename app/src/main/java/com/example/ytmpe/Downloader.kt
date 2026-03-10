@@ -155,8 +155,6 @@ suspend fun downloadVideo(
 // -----------------------------------------------------------------
 // friendlyError()
 // -----------------------------------------------------------------
-// Converts raw yt-dlp error output into a message your mom can
-// actually understand. yt-dlp errors are very technical by default.
 // -----------------------------------------------------------------
 fun friendlyError(raw: String): String {
     val msg = raw.lowercase()

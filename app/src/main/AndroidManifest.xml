@@ -16,6 +16,13 @@
         tools:ignore="ForegroundServicesPolicy"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- Keeps CPU awake during downloads so long videos don't fail when screen turns off -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Requests exemption from battery optimization — required on One UI 7/8 to prevent
+         Samsung's Battery AI from killing long-running downloads in the background -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- Required on Android 13+ to show notifications -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 

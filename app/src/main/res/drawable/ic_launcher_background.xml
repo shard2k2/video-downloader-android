@@ -5,29 +5,8 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- Download arrow shaft -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M54,24 L54,62"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="7"
-        android:strokeLineCap="round"/>
-
-    <!-- Download arrow head (pointing down) -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M36,48 L54,68 L72,48"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="7"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"/>
-
-    <!-- Bottom base line -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M30,78 L78,78"
-        android:strokeColor="#FFFFFF"
-        android:strokeWidth="7"
-        android:strokeLineCap="round"/>
+        android:fillColor="#1A56DB"
+        android:pathData="M0,0h108v108H0z"/>
 
 </vector>

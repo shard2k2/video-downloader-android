@@ -24,6 +24,7 @@ object DownloadHistory {
     private const val KEY_RECORDS = "records"
     private const val MAX_RECORDS = 100
 
+    @Synchronized
     fun save(context: Context, record: DownloadRecord) {
         val prefs    = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val existing = loadAll(context).toMutableList()
@@ -34,6 +35,7 @@ object DownloadHistory {
         prefs.edit().putString(KEY_RECORDS, jsonArray.toString()).apply()
     }
 
+    @Synchronized
     fun loadAll(context: Context): List<DownloadRecord> {
         val prefs      = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val jsonString = prefs.getString(KEY_RECORDS, null) ?: return emptyList()
@@ -45,6 +47,7 @@ object DownloadHistory {
         }
     }
 
+    @Synchronized
     fun delete(context: Context, id: Long) {
         val updated   = loadAll(context).filter { it.id != id }
         val prefs     = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -53,6 +56,7 @@ object DownloadHistory {
         prefs.edit().putString(KEY_RECORDS, jsonArray.toString()).apply()
     }
 
+    @Synchronized
     fun clearAll(context: Context) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().remove(KEY_RECORDS).apply()

@@ -22,14 +22,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Colours reused from MainActivity design tokens
-private val SheetBg     = Color(0xFF1C1C26)
-private val CardBg      = Color(0xFF252532)
-private val CardBorder  = Color(0xFF35354A)
-private val AccentColor = Color(0xFF00E5CC)
-private val TextMain    = Color(0xFFF0F0F5)
-private val TextSub     = Color(0xFF8888AA)
-private val DividerCol  = Color(0xFF2E2E3E)
+// Colours matching the main app design tokens
+private val FpCard     = Color(0xFF181818)
+private val FpCardAlt  = Color(0xFF222222)
+private val FpAccent   = Color(0xFF3B82F6)
+private val FpText     = Color(0xFFEEEEEE)
+private val FpTextSub  = Color(0xFF787878)
+private val FpDivider  = Color(0xFF272727)
 
 class FormatPickerActivity : ComponentActivity() {
 
@@ -38,7 +37,7 @@ class FormatPickerActivity : ComponentActivity() {
 
         val sharedUrl = intent?.getStringExtra(Intent.EXTRA_TEXT)
         if (sharedUrl.isNullOrBlank()) {
-            finishAndRemoveTask()
+            finish()
             return
         }
 
@@ -50,35 +49,38 @@ class FormatPickerActivity : ComponentActivity() {
                         putExtra(DownloadService.EXTRA_URL, sharedUrl)
                         putExtra(DownloadService.EXTRA_FORMAT, format)
                     }
-                    startForegroundService(serviceIntent)
-                    finishAndRemoveTask()
+                    // On Android 14+ (API 34+) release builds, startForegroundService() can throw
+                    // ForegroundServiceStartNotAllowedException if the OS considers the app to be
+                    // in the background at the moment the call is made (e.g. transparent-theme
+                    // activities on Samsung One UI 8 / Android 16). We catch any exception and
+                    // fall back to startService() — the service itself calls startForeground()
+                    // unconditionally in onStartCommand(), so it promotes itself regardless.
+                    try {
+                        startForegroundService(serviceIntent)
+                    } catch (_: Exception) {
+                        try { startService(serviceIntent) } catch (_: Exception) {}
+                    }
+                    finish()
                 },
-                onDismiss = { finishAndRemoveTask() }
+                onDismiss = { finish() }
             )
         }
     }
 }
 
-// -----------------------------------------------------------------
-// Data describing each format option shown in the picker
-// -----------------------------------------------------------------
-// No modifier = public by default. Must match visibility of FormatCard.
 data class FormatOption(
-    val code: String,        // internal format code passed to DownloadService
-    val icon: String,        // emoji icon
-    val title: String,       // bold label
-    val subtitle: String     // description line
+    val code:     String,
+    val glyph:    String,
+    val title:    String,
+    val subtitle: String
 )
 
 private val formatOptions = listOf(
-    FormatOption("MP3",      "🎵", "MP3 Audio",       "Audio only · Best quality"),
-    FormatOption("MP4_360",  "📹", "MP4 Low Quality", "Video · Smaller file size"),
-    FormatOption("MP4_1080", "🎬", "MP4 1080p",       "Video · Full HD quality"),
+    FormatOption("MP3",      "♪",  "MP3 Audio",       "Audio only · Best quality"),
+    FormatOption("MP4_360",  "▶",  "MP4 360p",        "Video · Smaller file size"),
+    FormatOption("MP4_1080", "HD", "MP4 1080p",        "Video · Full HD quality"),
 )
 
-// -----------------------------------------------------------------
-// Root composable — dark dimmed background + sheet on bottom
-// -----------------------------------------------------------------
 @Composable
 fun FormatPickerSheet(
     url: String,
@@ -88,104 +90,115 @@ fun FormatPickerSheet(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.6f))
-            // tapping the dim area dismisses the sheet
+            .background(Color.Black.copy(alpha = 0.72f))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             ) { onDismiss() },
         contentAlignment = Alignment.BottomCenter
     ) {
-        // The sheet itself — stop tap propagation so clicking inside
-        // doesn't dismiss the sheet
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null
-                ) { /* consume click so it doesn't reach dim background */ }
+                ) { /* consume */ }
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                    .background(SheetBg)
-                    .padding(bottom = 24.dp),
+                    .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
+                    .background(FpCard)
+                    .padding(bottom = 28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-
-                // ── Drag handle ──────────────────────────────────────
-                Spacer(modifier = Modifier.height(12.dp))
+                // Drag handle
+                Spacer(Modifier.height(14.dp))
                 Box(
                     modifier = Modifier
                         .width(36.dp)
                         .height(4.dp)
                         .clip(RoundedCornerShape(50))
-                        .background(TextSub.copy(alpha = 0.4f))
+                        .background(FpTextSub.copy(alpha = 0.35f))
                 )
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(Modifier.height(22.dp))
 
-                // ── Header ───────────────────────────────────────────
-                Text(
-                    text = "Save as",
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = TextMain
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Show a trimmed version of the URL so mom can see what's queued
-                Text(
-                    text = url,
-                    fontSize = 12.sp,
-                    color = TextSub,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 32.dp)
-                )
-
-                Spacer(modifier = Modifier.height(20.dp))
-
-                // ── Divider ──────────────────────────────────────────
-                HorizontalDivider(
-                    color = DividerCol,
-                    thickness = 1.dp,
-                    modifier = Modifier.padding(horizontal = 24.dp)
-                )
-                formatOptions.forEach { option ->
-                    FormatCard(option = option) { onFormatSelected(option.code) }
-                    Spacer(modifier = Modifier.height(10.dp))
+                // VidTown badge
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(FpAccent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text       = "V",
+                        color      = Color.White,
+                        fontSize   = 22.sp,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(Modifier.height(14.dp))
 
-                // ── Divider ──────────────────────────────────────────
-                HorizontalDivider(
-                    color = DividerCol,
-                    thickness = 1.dp,
-                    modifier = Modifier.padding(horizontal = 24.dp)
+                Text(
+                    text       = "Save as...",
+                    fontSize   = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color      = FpText
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(Modifier.height(6.dp))
 
-                // ── Cancel button ────────────────────────────────────
+                Text(
+                    text     = url,
+                    fontSize = 12.sp,
+                    color    = FpTextSub,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 36.dp)
+                )
+
+                Spacer(Modifier.height(22.dp))
+
+                HorizontalDivider(
+                    color     = FpDivider,
+                    thickness = 1.dp,
+                    modifier  = Modifier.padding(horizontal = 24.dp)
+                )
+
+                Spacer(Modifier.height(12.dp))
+
+                formatOptions.forEach { option ->
+                    FpFormatCard(option = option) { onFormatSelected(option.code) }
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                HorizontalDivider(
+                    color     = FpDivider,
+                    thickness = 1.dp,
+                    modifier  = Modifier.padding(horizontal = 24.dp)
+                )
+
+                Spacer(Modifier.height(14.dp))
+
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 24.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(CardBg)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(FpCardAlt)
+                        .border(1.dp, FpDivider, RoundedCornerShape(16.dp))
                         .clickable { onDismiss() }
                         .padding(vertical = 16.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Cancel",
-                        fontSize = 15.sp,
+                        text       = "Cancel",
+                        fontSize   = 15.sp,
                         fontWeight = FontWeight.Medium,
-                        color = TextSub
+                        color      = FpTextSub
                     )
                 }
             }
@@ -193,13 +206,8 @@ fun FormatPickerSheet(
     }
 }
 
-// -----------------------------------------------------------------
-// Single format option card
-// -----------------------------------------------------------------
 @Composable
-fun FormatCard(option: FormatOption, onClick: () -> Unit) {
-    // collectIsPressedAsState() reads the press state directly from
-    // the interactionSource — no manual boolean needed, no warning
+fun FpFormatCard(option: FormatOption, onClick: () -> Unit) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
@@ -207,54 +215,56 @@ fun FormatCard(option: FormatOption, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 24.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (isPressed) AccentColor.copy(alpha = 0.08f) else CardBg)
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (isPressed) FpAccent.copy(alpha = 0.1f) else FpCardAlt)
             .border(
                 width = 1.dp,
-                color = if (isPressed) AccentColor.copy(alpha = 0.5f) else CardBorder,
-                shape = RoundedCornerShape(16.dp)
+                color = if (isPressed) FpAccent.copy(alpha = 0.45f) else FpDivider,
+                shape = RoundedCornerShape(18.dp)
             )
             .clickable(
                 interactionSource = interactionSource,
-                indication = null
+                indication        = null
             ) { onClick() }
             .padding(horizontal = 18.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Icon circle
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(AccentColor.copy(alpha = 0.12f)),
+                .size(46.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(FpAccent.copy(alpha = 0.14f)),
             contentAlignment = Alignment.Center
         ) {
-            Text(text = option.icon, fontSize = 20.sp)
+            Text(
+                text       = option.glyph,
+                fontSize   = 20.sp,
+                color      = FpAccent,
+                fontWeight = FontWeight.Bold
+            )
         }
 
-        Spacer(modifier = Modifier.width(14.dp))
+        Spacer(Modifier.width(16.dp))
 
-        // Title + subtitle
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = option.title,
-                fontSize = 15.sp,
+                text       = option.title,
+                fontSize   = 15.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = TextMain
+                color      = FpText
             )
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(Modifier.height(3.dp))
             Text(
-                text = option.subtitle,
+                text     = option.subtitle,
                 fontSize = 12.sp,
-                color = TextSub
+                color    = FpTextSub
             )
         }
 
-        // Chevron arrow
         Text(
-            text = "›",
-            fontSize = 22.sp,
-            color = TextSub,
+            text       = "›",
+            fontSize   = 24.sp,
+            color      = FpTextSub,
             fontWeight = FontWeight.Light
         )
     }

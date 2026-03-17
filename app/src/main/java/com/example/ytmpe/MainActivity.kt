@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -43,24 +45,25 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
 // ─────────────────────────────────────────────────────────────────
-// Design tokens — Samsung One UI inspired
+// Design tokens — clean dark + blue, LocalSend-style
 // ─────────────────────────────────────────────────────────────────
-val SBg        = Color(0xFF0D0D14)
-val SCard      = Color(0xFF1A1A24)
-val SCardAlt   = Color(0xFF22222F)
-val SAccent    = Color(0xFF00C4AA)
-val SAccentDim = Color(0xFF00C4AA).copy(alpha = 0.12f)
-val SText      = Color(0xFFEEEEF5)
-val STextSub   = Color(0xFF8888A8)
-val SError     = Color(0xFFFF4D6A)
-val SDivider   = Color(0xFF252535)
-val SSuccess   = Color(0xFF34C759)
-val SAmber     = Color(0xFFFF9800)
+val Bg       = Color(0xFF0D0D0D)
+val Surf     = Color(0xFF181818)
+val SurfAlt  = Color(0xFF222222)
+val Accent   = Color(0xFF3B82F6)   // clean blue
+val OnAccent = Color.White
+val Txt      = Color(0xFFEEEEEE)
+val TxtSub   = Color(0xFF787878)
+val Err      = Color(0xFFEF4444)
+val Ok       = Color(0xFF4ADE80)
+val Warn     = Color(0xFFF59E0B)
+val Div      = Color(0xFF272727)
 
 // ─────────────────────────────────────────────────────────────────
 // Data class for live download state shown in the UI
@@ -79,12 +82,8 @@ data class ActiveDownload(
 // ─────────────────────────────────────────────────────────────────
 class MainActivity : ComponentActivity() {
 
-    // Mutable state updated by the progress receiver — hoisted here
-    // so it survives recomposition and can be shared with any composable
     private val activeDownloads = mutableStateMapOf<String, ActiveDownload>()
 
-    // Receives ACTION_PROGRESS broadcasts from DownloadService
-    // and updates the activeDownloads map
     private val progressReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action != DownloadService.ACTION_PROGRESS) return
@@ -95,9 +94,13 @@ class MainActivity : ComponentActivity() {
             val status     = intent.getStringExtra(DownloadService.EXTRA_STATUS)      ?: ""
             val filePath   = intent.getStringExtra(DownloadService.EXTRA_FILE_PATH)   ?: ""
 
-            activeDownloads[processId] = ActiveDownload(
-                processId, title, percent, statusText, status, filePath
-            )
+            if (status == DownloadService.STATUS_REMOVE) {
+                activeDownloads.remove(processId)
+            } else {
+                activeDownloads[processId] = ActiveDownload(
+                    processId, title, percent, statusText, status, filePath
+                )
+            }
         }
     }
 
@@ -119,6 +122,26 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0)
         }
+
+        // On Android 15+ (and Samsung One UI 7/8), the OS can kill long-running downloads
+        // even with a foreground service + WakeLock unless the app is explicitly exempt from
+        // battery optimization. We request this once — the system shows a one-tap dialog.
+        requestBatteryOptimizationExemption()
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                )
+            } catch (_: Exception) {
+                // Device doesn't support the dialog — user must do it manually in Settings
+            }
+        }
     }
 
     override fun onResume() {
@@ -133,7 +156,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Unregister when app goes to background — notifications handle it there
         try { unregisterReceiver(progressReceiver) } catch (_: Exception) {}
     }
 }
@@ -145,32 +167,28 @@ class MainActivity : ComponentActivity() {
 fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = darkColorScheme(
-            background   = SBg,
-            surface      = SCard,
-            primary      = SAccent,
-            onBackground = SText,
-            onSurface    = SText,
+            background   = Bg,
+            surface      = Surf,
+            primary      = Accent,
+            onBackground = Txt,
+            onSurface    = Txt,
         ),
         content = content
     )
 }
 
 // ─────────────────────────────────────────────────────────────────
-// MainScreen — two tabs with swipe support
+// MainScreen
 // ─────────────────────────────────────────────────────────────────
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MainScreen(activeDownloads: Map<String, ActiveDownload>) {
-    val context     = LocalContext.current
-    val pagerState  = rememberPagerState(pageCount = { 2 })
-    val scope       = rememberCoroutineScope()
+    val context    = LocalContext.current
+    val pagerState = rememberPagerState(pageCount = { 2 })
+    val scope      = rememberCoroutineScope()
 
     var historyItems by remember { mutableStateOf<List<DownloadRecord>>(emptyList()) }
 
-    // Reload history whenever:
-    // 1. User swipes to the Downloads tab
-    // 2. Any active download finishes/fails/cancels
-    // 3. App comes back from background (share flow) — handled in onResume
     val finishedStatuses = setOf(
         DownloadService.STATUS_DONE,
         DownloadService.STATUS_FAILED,
@@ -179,60 +197,57 @@ fun MainScreen(activeDownloads: Map<String, ActiveDownload>) {
 
     LaunchedEffect(pagerState.currentPage) {
         if (pagerState.currentPage == 1) {
-            historyItems = DownloadHistory.loadAll(context)
+            historyItems = withContext(Dispatchers.IO) { DownloadHistory.loadAll(context) }
         }
     }
 
     LaunchedEffect(activeDownloads.values.map { it.status }) {
         if (activeDownloads.values.any { it.status in finishedStatuses }) {
-            historyItems = DownloadHistory.loadAll(context)
+            historyItems = withContext(Dispatchers.IO) { DownloadHistory.loadAll(context) }
         }
     }
 
-    // Also reload history on first composition — catches downloads started
-    // via share while app was closed (they're saved to DB by the service)
     LaunchedEffect(Unit) {
-        historyItems = DownloadHistory.loadAll(context)
+        historyItems = withContext(Dispatchers.IO) { DownloadHistory.loadAll(context) }
     }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(SBg)
+            .background(Bg)
             .systemBarsPadding()
     ) {
-        AppBar()
+        AppHeader()
 
-        // Tab row stays fixed at top, pager scrolls below
         TabRow(
             selectedTabIndex = pagerState.currentPage,
-            containerColor   = SBg,
-            contentColor     = SAccent,
+            containerColor   = Bg,
+            contentColor     = Accent,
             indicator = { tabPositions ->
+                val cur = tabPositions[pagerState.currentPage]
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .wrapContentSize(Alignment.BottomStart)
-                        .offset(x = tabPositions[pagerState.currentPage].left)
-                        .width(tabPositions[pagerState.currentPage].width)
-                        .padding(horizontal = 32.dp)
+                        .offset(x = cur.left + 24.dp)
+                        .width(cur.width - 48.dp)
                         .height(2.dp)
-                        .background(SAccent, RoundedCornerShape(50))
+                        .clip(RoundedCornerShape(50))
+                        .background(Accent)
                 )
             },
             divider = {
-                Box(Modifier.fillMaxWidth().height(1.dp).background(SDivider))
+                HorizontalDivider(color = Div, thickness = 1.dp)
             }
         ) {
-            SamsungTab("Download",  pagerState.currentPage == 0) {
+            AppTab("Download", pagerState.currentPage == 0) {
                 scope.launch { pagerState.animateScrollToPage(0) }
             }
-            SamsungTab("Downloads", pagerState.currentPage == 1) {
+            AppTab("My Downloads", pagerState.currentPage == 1) {
                 scope.launch { pagerState.animateScrollToPage(1) }
             }
         }
 
-        // HorizontalPager enables swipe — pageCount=2, one page per tab
         HorizontalPager(
             state    = pagerState,
             modifier = Modifier.fillMaxSize()
@@ -245,12 +260,12 @@ fun MainScreen(activeDownloads: Map<String, ActiveDownload>) {
                     activeDownloads = activeDownloads,
                     historyItems    = historyItems,
                     onDelete = { record ->
-                        DownloadHistory.delete(context, record.id)
-                        historyItems = DownloadHistory.loadAll(context)
+                        historyItems = historyItems.filter { it.id != record.id }
+                        scope.launch(Dispatchers.IO) { DownloadHistory.delete(context, record.id) }
                     },
                     onClearAll = {
-                        DownloadHistory.clearAll(context)
                         historyItems = emptyList()
+                        scope.launch(Dispatchers.IO) { DownloadHistory.clearAll(context) }
                     }
                 )
             }
@@ -259,10 +274,10 @@ fun MainScreen(activeDownloads: Map<String, ActiveDownload>) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// App bar
+// App header
 // ─────────────────────────────────────────────────────────────────
 @Composable
-fun AppBar() {
+fun AppHeader() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -271,19 +286,22 @@ fun AppBar() {
     ) {
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(SAccentDim)
-                .border(1.dp, SAccent.copy(alpha = 0.4f), CircleShape),
+                .size(38.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Accent),
             contentAlignment = Alignment.Center
-        ) { Text("▼", color = SAccent, fontSize = 14.sp) }
+        ) {
+            Text("V", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        }
 
         Spacer(Modifier.width(12.dp))
 
-        Column {
-            Text("VidTown", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = SText)
-            Text("Video & audio downloader", fontSize = 12.sp, color = STextSub)
-        }
+        Text(
+            text       = "VidTown",
+            fontSize   = 20.sp,
+            fontWeight = FontWeight.SemiBold,
+            color      = Txt
+        )
     }
 }
 
@@ -291,16 +309,21 @@ fun AppBar() {
 // Tab button
 // ─────────────────────────────────────────────────────────────────
 @Composable
-fun SamsungTab(title: String, selected: Boolean, onClick: () -> Unit) {
+fun AppTab(title: String, selected: Boolean, onClick: () -> Unit) {
+    // animateColorAsState is fine here — tabs are never inside a LazyColumn
     val textColor by animateColorAsState(
-        if (selected) SAccent else STextSub, tween(200), label = "tab"
+        if (selected) Accent else TxtSub, tween(180), label = "tab"
     )
-    Tab(selected = selected, onClick = onClick,
-        selectedContentColor = SAccent, unselectedContentColor = STextSub) {
+    Tab(
+        selected               = selected,
+        onClick                = onClick,
+        selectedContentColor   = Accent,
+        unselectedContentColor = TxtSub
+    ) {
         Text(
             text       = title,
             color      = textColor,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
             fontSize   = 14.sp,
             modifier   = Modifier.padding(vertical = 12.dp)
         )
@@ -308,7 +331,7 @@ fun SamsungTab(title: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Download tab — URL input + format + queue button
+// Download tab
 // ─────────────────────────────────────────────────────────────────
 @Composable
 fun DownloadTab(onDownloadQueued: () -> Unit) {
@@ -317,91 +340,153 @@ fun DownloadTab(onDownloadQueued: () -> Unit) {
     var url            by remember { mutableStateOf("") }
     var selectedFormat by remember { mutableStateOf("MP4_1080") }
 
+    val trimmedUrl  = url.trim()
+    val canDownload = trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")
+
     LazyColumn(
         modifier            = Modifier.fillMaxSize(),
         contentPadding      = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // ── URL input ─────────────────────────────────────────────
         item {
             SectionCard {
-                Text("Video URL", fontSize = 13.sp, color = STextSub, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(10.dp))
+                Text(
+                    text       = "URL",
+                    fontSize   = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color      = TxtSub,
+                    modifier   = Modifier.padding(bottom = 8.dp)
+                )
                 OutlinedTextField(
                     value         = url,
                     onValueChange = { url = it },
                     placeholder   = {
-                        Text("Paste a YouTube or Facebook URL", color = STextSub, fontSize = 14.sp)
+                        Text(
+                            "Paste a link...",
+                            color    = TxtSub,
+                            fontSize = 14.sp
+                        )
                     },
                     colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor     = SText,
-                        unfocusedTextColor   = SText,
-                        focusedBorderColor   = SAccent,
-                        unfocusedBorderColor = SDivider,
-                        cursorColor          = SAccent
+                        focusedTextColor        = Txt,
+                        unfocusedTextColor      = Txt,
+                        focusedBorderColor      = Accent,
+                        unfocusedBorderColor    = Div,
+                        cursorColor             = Accent,
+                        focusedContainerColor   = SurfAlt,
+                        unfocusedContainerColor = SurfAlt
                     ),
-                    shape     = RoundedCornerShape(12.dp),
-                    modifier  = Modifier.fillMaxWidth(),
+                    shape      = RoundedCornerShape(10.dp),
+                    modifier   = Modifier.fillMaxWidth(),
                     singleLine = true
                 )
                 if (url.isBlank()) {
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Tip: share from YouTube or Facebook app directly",
-                        fontSize = 12.sp, color = STextSub.copy(alpha = 0.7f)
+                        text     = "Tip: share from YouTube, Instagram or TikTok directly",
+                        fontSize = 12.sp,
+                        color    = TxtSub
+                    )
+                } else if (!canDownload) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text     = "Must be an http/https link",
+                        fontSize = 12.sp,
+                        color    = Err
                     )
                 }
             }
         }
 
+        // ── Format selector ───────────────────────────────────────
         item {
             SectionCard {
-                Text("Format", fontSize = 13.sp, color = STextSub, fontWeight = FontWeight.Medium)
-                Spacer(Modifier.height(12.dp))
+                Text(
+                    text       = "Format",
+                    fontSize   = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color      = TxtSub,
+                    modifier   = Modifier.padding(bottom = 10.dp)
+                )
                 Row(
                     modifier              = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     listOf(
-                        Triple("MP3",      "🎵", "Audio"),
-                        Triple("MP4_360",  "📹", "Low"),
-                        Triple("MP4_1080", "🎬", "1080p"),
-                    ).forEach { (code, icon, label) ->
-                        FormatChip(icon, label, selectedFormat == code, Modifier.weight(1f)) {
-                            selectedFormat = code
+                        Triple("MP3",      "MP3",   "Audio"),
+                        Triple("MP4_360",  "360p",  "Low"),
+                        Triple("MP4_1080", "1080p", "HD"),
+                    ).forEach { (code, tag, label) ->
+                        // No animateColorAsState here — direct color avoids per-item animation overhead
+                        val isSelected = selectedFormat == code
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSelected) Accent else SurfAlt)
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isSelected) Accent else Div,
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication        = null
+                                ) { selectedFormat = code }
+                                .padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text       = tag,
+                                fontSize   = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color      = if (isSelected) Color.White else Txt
+                            )
+                            Text(
+                                text     = label,
+                                fontSize = 11.sp,
+                                color    = if (isSelected) Color.White.copy(alpha = 0.75f) else TxtSub
+                            )
                         }
                     }
                 }
             }
         }
 
+        // ── Download button ───────────────────────────────────────
         item {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (url.isNotBlank()) SAccent else SCard)
+                    .height(52.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(if (canDownload) Accent else Surf)
+                    .border(1.dp, if (canDownload) Accent else Div, RoundedCornerShape(12.dp))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication        = null,
-                        enabled           = url.isNotBlank()
+                        enabled           = canDownload
                     ) {
-                        context.startForegroundService(
-                            Intent(context, DownloadService::class.java).apply {
-                                putExtra(DownloadService.EXTRA_URL, url)
-                                putExtra(DownloadService.EXTRA_FORMAT, selectedFormat)
-                            }
-                        )
+                        val serviceIntent = Intent(context, DownloadService::class.java).apply {
+                            putExtra(DownloadService.EXTRA_URL, url)
+                            putExtra(DownloadService.EXTRA_FORMAT, selectedFormat)
+                        }
+                        try {
+                            context.startForegroundService(serviceIntent)
+                        } catch (_: Exception) {
+                            try { context.startService(serviceIntent) } catch (_: Exception) {}
+                        }
                         url = ""
-                        onDownloadQueued() // switch to Downloads tab
+                        onDownloadQueued()
                     },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    "Download",
-                    fontSize   = 16.sp,
+                    text       = "Download",
+                    fontSize   = 15.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color      = if (url.isNotBlank()) SBg else STextSub
+                    color      = if (canDownload) Color.White else TxtSub
                 )
             }
         }
@@ -411,7 +496,7 @@ fun DownloadTab(onDownloadQueued: () -> Unit) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Downloads tab — active progress + history in one list
+// Downloads tab
 // ─────────────────────────────────────────────────────────────────
 @Composable
 fun DownloadsTab(
@@ -422,73 +507,48 @@ fun DownloadsTab(
 ) {
     val context = LocalContext.current
 
-    // Split active downloads: running/queued vs finished
-    val running  = activeDownloads.values
+    val running = activeDownloads.values
         .filter { it.status == DownloadService.STATUS_ACTIVE || it.status == DownloadService.STATUS_QUEUED }
         .sortedBy { it.processId }
     val finished = activeDownloads.values
         .filter { it.status in setOf(DownloadService.STATUS_DONE, DownloadService.STATUS_FAILED, DownloadService.STATUS_CANCELLED) }
 
-    // IDs that are already shown as active — exclude from history to avoid dupes
-    val activeIds = activeDownloads.keys
-
+    val activeIds     = activeDownloads.keys
     val historyToShow = historyItems.filter { record ->
-        // Hide history records whose processId hash matches a current active download
-        activeIds.none { id -> id.hashCode().toLong() == record.id }
+        activeIds.none { id -> id.removePrefix("dl_").toLongOrNull() == record.id }
     }
 
     LazyColumn(
         modifier            = Modifier.fillMaxSize(),
         contentPadding      = PaddingValues(horizontal = 20.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // ── Active / queued downloads ─────────────────────────────
         if (running.isNotEmpty()) {
-            item {
-                Text(
-                    "Active",
-                    fontSize   = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color      = STextSub,
-                    modifier   = Modifier.padding(horizontal = 4.dp)
-                )
-            }
+            item { ListLabel("Active") }
             items(running, key = { it.processId }) { dl ->
                 ActiveDownloadCard(dl)
             }
         }
 
-        // ── Recently finished (from broadcast, not yet in DB) ─────
         if (finished.isNotEmpty()) {
-            item {
-                Text(
-                    "Just finished",
-                    fontSize   = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color      = STextSub,
-                    modifier   = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
-                )
-            }
+            item { ListLabel("Just Finished") }
             items(finished, key = { it.processId }) { dl ->
                 FinishedDownloadCard(dl, context)
             }
         }
 
-        // ── History ───────────────────────────────────────────────
         if (historyToShow.isNotEmpty()) {
             item {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    modifier              = Modifier.fillMaxWidth(),
                     verticalAlignment     = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("History", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = STextSub)
+                    ListLabel("History")
                     Text(
-                        "Clear all",
+                        text     = "Clear all",
                         fontSize = 12.sp,
-                        color    = SError,
+                        color    = Err.copy(alpha = 0.8f),
                         modifier = Modifier.clickable { onClearAll() }
                     )
                 }
@@ -500,17 +560,23 @@ fun DownloadsTab(
 
         if (running.isEmpty() && finished.isEmpty() && historyToShow.isEmpty()) {
             item {
-                Box(
-                    modifier         = Modifier.fillMaxWidth().padding(top = 80.dp),
-                    contentAlignment = Alignment.Center
+                Column(
+                    modifier            = Modifier.fillMaxWidth().padding(top = 80.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("📭", fontSize = 40.sp)
-                        Spacer(Modifier.height(12.dp))
-                        Text("No downloads yet", fontSize = 16.sp, color = SText, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.height(4.dp))
-                        Text("Paste a URL in the Download tab", fontSize = 13.sp, color = STextSub)
+                    Box(
+                        modifier         = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(Surf),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("↓", fontSize = 28.sp, color = TxtSub)
                     }
+                    Spacer(Modifier.height(16.dp))
+                    Text("No downloads yet", fontSize = 16.sp, color = Txt, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Paste a link in the Download tab", fontSize = 13.sp, color = TxtSub)
                 }
             }
         }
@@ -518,64 +584,70 @@ fun DownloadsTab(
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Active download card — shows progress bar + cancel button
+// Active download card
 // ─────────────────────────────────────────────────────────────────
 @Composable
 fun ActiveDownloadCard(dl: ActiveDownload) {
-    val context = LocalContext.current
+    val context  = LocalContext.current
     val isQueued = dl.status == DownloadService.STATUS_QUEUED
 
-    // Animate the progress bar smoothly
+    // animateFloatAsState is fine here — active downloads are never more than a handful
     val animatedPercent by animateFloatAsState(
         targetValue   = dl.percent / 100f,
         animationSpec = tween(300),
-        label         = "progress_${dl.processId}"
+        label         = "p_${dl.processId}"
     )
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(SCard)
-            .padding(16.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surf)
+            .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            // Format icon
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(SAccentDim),
+                    .size(38.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(SurfAlt),
                 contentAlignment = Alignment.Center
             ) {
-                Text(if (isQueued) "⏳" else "⬇", fontSize = 16.sp)
+                Text(
+                    text     = if (isQueued) "…" else "↓",
+                    fontSize = 16.sp,
+                    color    = if (isQueued) TxtSub else Accent
+                )
             }
 
             Spacer(Modifier.width(12.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    dl.title,
+                    text       = dl.title,
                     fontSize   = 14.sp,
                     fontWeight = FontWeight.Medium,
-                    color      = SText,
+                    color      = Txt,
                     maxLines   = 1,
                     overflow   = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.height(2.dp))
-                Text(dl.statusText, fontSize = 12.sp, color = STextSub, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text     = dl.statusText,
+                    fontSize = 12.sp,
+                    color    = TxtSub,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
-            Spacer(Modifier.width(8.dp))
-
-            // Cancel button
             if (!isQueued) {
+                Spacer(Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(SError.copy(alpha = 0.12f))
-                        .border(1.dp, SError.copy(alpha = 0.3f), CircleShape)
+                        .background(SurfAlt)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication        = null
@@ -583,12 +655,13 @@ fun ActiveDownloadCard(dl: ActiveDownload) {
                             context.sendBroadcast(
                                 Intent(DownloadService.ACTION_CANCEL).apply {
                                     setPackage(context.packageName)
+                                    putExtra(DownloadService.EXTRA_CANCEL_PROCESS_ID, dl.processId)
                                 }
                             )
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("✕", fontSize = 12.sp, color = SError)
+                    Text("✕", fontSize = 11.sp, color = TxtSub)
                 }
             }
         }
@@ -596,60 +669,46 @@ fun ActiveDownloadCard(dl: ActiveDownload) {
         if (!isQueued) {
             Spacer(Modifier.height(12.dp))
 
-            // Progress bar track
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(4.dp)
+                    .height(3.dp)
                     .clip(RoundedCornerShape(50))
-                    .background(SCardAlt)
+                    .background(SurfAlt)
             ) {
-                // Filled portion
                 Box(
                     modifier = Modifier
                         .fillMaxWidth(animatedPercent.coerceIn(0f, 1f))
                         .fillMaxHeight()
                         .clip(RoundedCornerShape(50))
-                        .background(SAccent)
+                        .background(Accent)
                 )
             }
 
             if (dl.percent > 0f) {
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "${dl.percent.toInt()}%",
-                    fontSize = 11.sp,
-                    color    = SAccent
-                )
+                Text("${dl.percent.toInt()}%", fontSize = 11.sp, color = TxtSub)
             }
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Just-finished card (from broadcast, before history reloads)
+// Just-finished card
 // ─────────────────────────────────────────────────────────────────
 @Composable
 fun FinishedDownloadCard(dl: ActiveDownload, context: Context) {
     val isDone      = dl.status == DownloadService.STATUS_DONE
     val isCancelled = dl.status == DownloadService.STATUS_CANCELLED
-    val iconBg      = when {
-        isDone      -> SAccentDim
-        isCancelled -> SAmber.copy(alpha = 0.15f)
-        else        -> SError.copy(alpha = 0.12f)
-    }
-    val icon = when {
-        isCancelled -> "⊘"
-        !isDone     -> "✕"
-        else        -> "✓"
-    }
-    val labelColor = when {
-        isDone      -> SSuccess
-        isCancelled -> SAmber
-        else        -> SError
+
+    // Direct color — no animation needed here, these appear once
+    val statusColor = when {
+        isDone      -> Ok
+        isCancelled -> Warn
+        else        -> Err
     }
     val label = when {
-        isDone      -> "Complete"
+        isDone      -> "Done"
         isCancelled -> "Cancelled"
         else        -> "Failed"
     }
@@ -657,39 +716,51 @@ fun FinishedDownloadCard(dl: ActiveDownload, context: Context) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(SCard)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surf)
             .clickable(enabled = isDone && dl.filePath.isNotBlank()) {
                 openFile(context, dl.filePath)
             }
-            .padding(16.dp),
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(iconBg),
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfAlt),
             contentAlignment = Alignment.Center
-        ) { Text(icon, fontSize = 16.sp, color = labelColor) }
+        ) {
+            Text(
+                text     = if (isDone) "✓" else if (isCancelled) "–" else "✕",
+                fontSize = 15.sp,
+                color    = statusColor
+            )
+        }
 
         Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(dl.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = SText,
-                maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                text       = dl.title,
+                fontSize   = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color      = Txt,
+                maxLines   = 1,
+                overflow   = TextOverflow.Ellipsis
+            )
             Spacer(Modifier.height(2.dp))
-            Text(label, fontSize = 12.sp, color = labelColor)
+            Text(text = label, fontSize = 12.sp, color = statusColor)
         }
 
         if (isDone) {
-            Text("›", fontSize = 20.sp, color = STextSub)
+            Text("›", fontSize = 20.sp, color = TxtSub)
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────────
-// History card — persistent records from DB
+// History card
 // ─────────────────────────────────────────────────────────────────
 @Composable
 fun HistoryCard(record: DownloadRecord, onDelete: () -> Unit) {
@@ -699,21 +770,11 @@ fun HistoryCard(record: DownloadRecord, onDelete: () -> Unit) {
         SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(Date(record.timestamp))
     }
 
-    val iconBg = when {
-        record.success -> SAccentDim
-        isCancelled    -> SAmber.copy(alpha = 0.15f)
-        else           -> SError.copy(alpha = 0.12f)
-    }
-    val icon = when {
-        isCancelled            -> "⊘"
-        !record.success        -> "✕"
-        record.format == "MP3" -> "🎵"
-        else                   -> "🎬"
-    }
+    // Direct color — no animation inside scroll list
     val statusColor = when {
-        record.success -> SSuccess
-        isCancelled    -> SAmber
-        else           -> SError
+        record.success -> Ok
+        isCancelled    -> Warn
+        else           -> Err
     }
     val statusLabel = when {
         record.success -> formatLabel(record.format)
@@ -724,37 +785,52 @@ fun HistoryCard(record: DownloadRecord, onDelete: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(SCard)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surf)
             .clickable {
                 if (record.success && record.filePath.isNotBlank()) openFile(context, record.filePath)
             }
-            .padding(16.dp),
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(iconBg),
+                .size(40.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfAlt),
             contentAlignment = Alignment.Center
-        ) { Text(icon, fontSize = 18.sp) }
+        ) {
+            Text(
+                text     = when {
+                    isCancelled            -> "–"
+                    !record.success        -> "✕"
+                    record.format == "MP3" -> "♪"
+                    else                   -> "▶"
+                },
+                fontSize = 16.sp,
+                color    = statusColor
+            )
+        }
 
         Spacer(Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            Text(record.title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = SText,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(
+                text       = record.title,
+                fontSize   = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color      = Txt,
+                maxLines   = 2,
+                overflow   = TextOverflow.Ellipsis
+            )
             Spacer(Modifier.height(4.dp))
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment     = Alignment.CenterVertically
             ) {
-                Badge(containerColor = if (record.success) SAccentDim else iconBg) {
-                    Text(statusLabel, color = statusColor, fontSize = 10.sp,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
-                }
-                Text(dateStr, fontSize = 11.sp, color = STextSub)
+                Text(text = statusLabel, fontSize = 11.sp, color = statusColor)
+                Text("·", fontSize = 11.sp, color = Div)
+                Text(text = dateStr, fontSize = 11.sp, color = TxtSub)
             }
         }
 
@@ -762,12 +838,17 @@ fun HistoryCard(record: DownloadRecord, onDelete: () -> Unit) {
 
         Box(
             modifier = Modifier
-                .size(32.dp)
+                .size(30.dp)
                 .clip(CircleShape)
-                .background(SError.copy(alpha = 0.1f))
-                .clickable { onDelete() },
+                .background(SurfAlt)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication        = null
+                ) { onDelete() },
             contentAlignment = Alignment.Center
-        ) { Text("✕", fontSize = 12.sp, color = SError) }
+        ) {
+            Text("✕", fontSize = 11.sp, color = TxtSub)
+        }
     }
 }
 
@@ -780,31 +861,23 @@ fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(SCard)
-            .padding(18.dp),
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surf)
+            .padding(16.dp),
         content = content
     )
 }
 
 @Composable
-fun FormatChip(icon: String, label: String, selected: Boolean,
-               modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val bg by animateColorAsState(if (selected) SAccent else SCardAlt, tween(150), label = "chip_bg")
-    val tc by animateColorAsState(if (selected) SBg else STextSub, tween(150), label = "chip_text")
-
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(bg)
-            .clickable(remember { MutableInteractionSource() }, null) { onClick() }
-            .padding(vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(icon, fontSize = 20.sp)
-        Spacer(Modifier.height(4.dp))
-        Text(label, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal, color = tc)
-    }
+fun ListLabel(text: String) {
+    Text(
+        text          = text,
+        fontSize      = 11.sp,
+        fontWeight    = FontWeight.Medium,
+        color         = TxtSub,
+        letterSpacing = 0.5.sp,
+        modifier      = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
+    )
 }
 
 @Composable
@@ -814,14 +887,16 @@ fun OpenFolderButton() {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(SCard)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Surf)
             .clickable {
-                val opened = tryOpenFolder(context,
+                val opened = tryOpenFolder(
+                    context,
                     Intent("com.sec.android.app.myfiles.LAUNCH_MY_FILES").apply {
-                        putExtra("start_path", Environment
-                            .getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                            .absolutePath)
+                        putExtra(
+                            "start_path",
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
+                        )
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     },
                     Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
@@ -835,25 +910,29 @@ fun OpenFolderButton() {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                 )
-                if (!opened) Toast.makeText(context, "No file manager app found", Toast.LENGTH_SHORT).show()
+                if (!opened) Toast.makeText(context, "No file manager found", Toast.LENGTH_SHORT).show()
             }
-            .padding(16.dp),
+            .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            modifier = Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(SAccentDim),
+            modifier = Modifier
+                .size(38.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(SurfAlt),
             contentAlignment = Alignment.Center
-        ) { Text("📁", fontSize = 16.sp) }
+        ) {
+            Text("📁", fontSize = 16.sp)
+        }
 
         Spacer(Modifier.width(12.dp))
 
-        Column {
-            Text("Open Downloads folder", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = SText)
-            Text("View all saved files", fontSize = 12.sp, color = STextSub)
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Open Downloads folder", fontSize = 14.sp, fontWeight = FontWeight.Medium, color = Txt)
+            Text("View all saved files", fontSize = 12.sp, color = TxtSub)
         }
 
-        Spacer(Modifier.weight(1f))
-        Text("›", fontSize = 20.sp, color = STextSub)
+        Text("›", fontSize = 20.sp, color = TxtSub)
     }
 }
 

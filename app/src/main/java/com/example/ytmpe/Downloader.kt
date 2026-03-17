@@ -12,8 +12,9 @@ import kotlinx.coroutines.withContext
 // -----------------------------------------------------------------
 // ensureInitialized()
 // -----------------------------------------------------------------
-private var isInitialized = false
+@Volatile private var isInitialized = false
 
+@Synchronized
 fun ensureInitialized(context: Context) {
     if (!isInitialized) {
         YoutubeDL.getInstance().init(context)
@@ -52,6 +53,10 @@ suspend fun updateYtDlp(context: Context): String {
         }
     }
 }
+
+// Sentinel returned by downloadVideo() when yt-dlp skipped the file
+// because it already exists (--no-overwrites). Not an error.
+const val ALREADY_DOWNLOADED = "ALREADY_DOWNLOADED"
 
 // -----------------------------------------------------------------
 // fetchVideoTitle()
@@ -100,6 +105,14 @@ suspend fun downloadVideo(
         request.addOption("--extractor-retries", "3")
         request.addOption("--no-check-certificates")
         request.addOption("--no-playlist")
+        // Retry on network drops — critical for long videos on weaker devices
+        request.addOption("--retries", "10")
+        request.addOption("--fragment-retries", "10")
+        // Abort stalled connections instead of hanging forever
+        request.addOption("--socket-timeout", "30")
+        // Skip if the output file already exists — prevents yt-dlp from re-downloading
+        // fragments and then hanging trying to merge into an already-existing mp4.
+        request.addOption("--no-overwrites")
 
         when (format) {
             "MP3" -> {
@@ -113,11 +126,17 @@ suspend fun downloadVideo(
                 request.addOption("--parse-metadata", "%(uploader)s:%(meta_artist)s")
             }
             "MP4_360" -> {
-                request.addOption("-f", "bestvideo[height<=480]+bestaudio/best[height<=480]")
+                // Prefer a pre-muxed MP4 (no FFmpeg merge needed) — avoids OOM on
+                // low-RAM devices (e.g. Samsung A23) when processing long videos.
+                // Falls back to DASH merge only if no pre-muxed stream exists.
+                request.addOption("-f", "best[height<=360][ext=mp4]/bestvideo[height<=360]+bestaudio/best[height<=360]")
                 request.addOption("--merge-output-format", "mp4")
             }
             else -> {
-                request.addOption("-f", "bestvideo[height<=1080]+bestaudio/best")
+                // Prefer mp4 video + m4a audio so FFmpeg only remuxes (fast, seconds)
+                // instead of transcoding webm→mp4 (slow, can appear stuck for minutes).
+                // Falls back to any video+audio merge, then to best single-file format.
+                request.addOption("-f", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best")
                 request.addOption("--merge-output-format", "mp4")
             }
         }
@@ -130,11 +149,21 @@ suspend fun downloadVideo(
             }
 
             val afterFiles = outputDir.listFiles()?.map { it.absolutePath }?.toSet() ?: emptySet()
-            val newFile = (afterFiles - beforeFiles).firstOrNull()
+            val newFiles = (afterFiles - beforeFiles).filter { path ->
+                !path.endsWith(".part") && !path.endsWith(".ytdl") && !path.endsWith(".temp")
+            }
+            val expectedExt = if (format == "MP3") ".mp3" else ".mp4"
+            val newFile = newFiles.firstOrNull { it.endsWith(expectedExt) } ?: newFiles.firstOrNull()
+
+            if (newFile == null) {
+                // No new file was created — yt-dlp skipped because the file already exists.
+                onProgress(-1f, "already_downloaded")
+                return@withContext ALREADY_DOWNLOADED
+            }
 
             MediaScannerConnection.scanFile(
                 context,
-                arrayOf(newFile ?: outputDir.absolutePath),
+                arrayOf(newFile),
                 null, null
             )
 
@@ -159,6 +188,10 @@ suspend fun downloadVideo(
 fun friendlyError(raw: String): String {
     val msg = raw.lowercase()
     return when {
+        // File already exists — yt-dlp skipped it
+        msg.contains("already_downloaded") ->
+            "Already downloaded. Check your Downloads folder."
+
         // User cancelled — not really an error
         msg.contains("cancelled") || msg.contains("interrupted") ->
             "Download cancelled."
